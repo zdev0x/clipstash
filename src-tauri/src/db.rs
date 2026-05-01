@@ -179,7 +179,7 @@ impl Database {
             .ok()
         };
 
-        if let Some(Some(path)) = image_path {
+        if let Some(path) = image_path {
             std::fs::remove_file(&path).ok();
         }
 
