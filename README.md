@@ -87,7 +87,12 @@ npm run tauri build
 - [ ] 全局快捷键 (Cmd/Ctrl+Shift+V)
 - [ ] 系统托盘图标
 
-### Phase 4: 数据持久化
+### Phase 4: 数据持久化 ✅
+- [x] rusqlite + SQLite 本地存储
+- [x] 数据库自动建表 + 索引
+- [x] 首次运行自动填充示例数据
+- [x] 关闭重开数据不丢失
+- [x] 错误处理 + 重试 UI
 - [ ] 本地 SQLite 存储
 - [ ] 应用重启后恢复历史
 - [ ] 搜索和过滤
