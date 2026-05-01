@@ -10,6 +10,28 @@ pub struct Database {
 }
 
 impl Database {
+    /// 创建空数据库（后备方案）
+    pub fn new_empty() -> Self {
+        let conn = Connection::open_in_memory().expect("Failed to create in-memory db");
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS clipboard_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                content     TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'text',
+                pinned      INTEGER NOT NULL DEFAULT 0,
+                image_path  TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            )",
+            [],
+        )
+        .ok();
+
+        Self {
+            conn: std::sync::Mutex::new(conn),
+            images_dir: String::new(),
+        }
+    }
+
     /// 创建数据库连接并初始化表结构
     pub fn new(db_path: &str) -> Result<Self, String> {
         let conn = Connection::open(db_path)

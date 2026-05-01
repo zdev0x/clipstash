@@ -21,13 +21,11 @@ pub struct ClipboardEntry {
 
 // ===== Tauri Commands =====
 
-/// 获取剪贴板历史记录
 #[tauri::command]
 fn get_clipboard_history(db: tauri::State<'_, Arc<Database>>) -> Result<Vec<ClipboardEntry>, String> {
     db.get_all()
 }
 
-/// 添加文本记录
 #[tauri::command]
 fn add_clipboard_entry(
     db: tauri::State<'_, Arc<Database>>,
@@ -38,7 +36,6 @@ fn add_clipboard_entry(
     db.insert_text(&content, &ct)
 }
 
-/// 从系统剪贴板捕获当前内容
 #[tauri::command]
 async fn capture_clipboard(
     app: tauri::AppHandle,
@@ -46,13 +43,10 @@ async fn capture_clipboard(
 ) -> Result<ClipboardEntry, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
-    // 读取剪贴板文本
     match app.clipboard().read_text() {
         Ok(text) => {
             if !text.is_empty() {
-                let entry = db.insert_text(&text, "text")
-                    .map_err(|e| e.to_string())?;
-                return Ok(entry);
+                return db.insert_text(&text, "text");
             }
         }
         Err(_) => {}
@@ -61,7 +55,6 @@ async fn capture_clipboard(
     Err("剪贴板为空，请先复制一些文本内容".to_string())
 }
 
-/// 保存上传的图片文件
 #[tauri::command]
 async fn save_image_entry(
     db: tauri::State<'_, Arc<Database>>,
@@ -78,25 +71,21 @@ async fn save_image_entry(
     db.insert_image(&format!("🖼️ {}", filename), &image_data)
 }
 
-/// 切换固定状态
 #[tauri::command]
 fn toggle_pin(db: tauri::State<'_, Arc<Database>>, id: u32) -> Result<bool, String> {
     db.toggle_pin(id)
 }
 
-/// 删除一条记录
 #[tauri::command]
 fn delete_entry(db: tauri::State<'_, Arc<Database>>, id: u32) -> Result<bool, String> {
     db.delete(id)
 }
 
-/// 清除所有未固定的记录
 #[tauri::command]
 fn clear_unpinned(db: tauri::State<'_, Arc<Database>>) -> Result<usize, String> {
     db.clear_unpinned()
 }
 
-/// 切换窗口显隐
 #[tauri::command]
 fn toggle_window(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -109,21 +98,6 @@ fn toggle_window(app: tauri::AppHandle) {
     }
 }
 
-// ===== 数据库路径 =====
-
-fn get_db_path(app: &tauri::AppHandle) -> String {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .expect("Failed to get app data dir")
-        .to_string_lossy()
-        .to_string();
-
-    std::fs::create_dir_all(&app_dir).ok();
-
-    format!("{}/clipstash.db", app_dir)
-}
-
 // ===== 插件初始化 =====
 
 pub fn run() {
@@ -132,9 +106,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["super+shift+v", "ctrl+shift+v"])
+                .with_shortcuts(["ctrl+shift+v"])
                 .unwrap()
-                .with_handler(move |app, _shortcut, event| {
+                .with_handler(|app, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
                         if let Some(window) = app.get_webview_window("main") {
                             if window.is_visible().unwrap_or(false) {
@@ -149,13 +123,31 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            let db_path = get_db_path(&app.handle());
-            eprintln!("📂 Database path: {}", db_path);
+            // 安全地获取数据库路径
+            let app_dir = app.path().app_data_dir().unwrap_or_else(|_| {
+                // 回退到当前目录
+                std::env::current_dir().unwrap_or_default()
+            });
 
-            let database = Database::new(&db_path)
-                .expect("Failed to initialize database");
+            // 确保目录存在
+            std::fs::create_dir_all(&app_dir).ok();
 
-            app.manage(Arc::new(database));
+            let db_path = app_dir.join("clipstash.db");
+            eprintln!("📂 Database path: {:?}", db_path);
+
+            // 安全地初始化数据库
+            match Database::new(&db_path.to_string_lossy()) {
+                Ok(database) => {
+                    app.manage(Arc::new(database));
+                    eprintln!("✅ Database initialized successfully");
+                }
+                Err(e) => {
+                    eprintln!("❌ Database init failed: {}", e);
+                    // 创建一个空数据库作为后备
+                    let database = Database::new_empty();
+                    app.manage(Arc::new(database));
+                }
+            }
 
             Ok(())
         })
