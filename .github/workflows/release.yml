@@ -34,43 +34,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract version from tag
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          echo "VERSION=$TAG" >> $GITHUB_OUTPUT
-          echo "📌 Building version: $TAG"
-
-      - name: Update version in tauri.conf.json
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          python3 -c "
-          import json, sys
-          version = sys.argv[1]
-          with open('src-tauri/tauri.conf.json', 'r') as f:
-              config = json.load(f)
-          config['version'] = version
-          with open('src-tauri/tauri.conf.json', 'w') as f:
-              json.dump(config, f, indent=2)
-          print(f'✅ Version set to {version}')
-          " "$VERSION"
-
-      - name: Update version in package.json
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          python3 -c "
-          import json, sys
-          version = sys.argv[1]
-          with open('package.json', 'r') as f:
-              config = json.load(f)
-          config['version'] = version
-          with open('package.json', 'w') as f:
-              json.dump(config, f, indent=2)
-          print(f'✅ package.json version set to {version}')
-          " "$VERSION"
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -97,7 +60,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "ClipStash v${{ steps.version.outputs.VERSION }}"
+          releaseName: "ClipStash ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install."
           releaseDraft: false
           prerelease: false
