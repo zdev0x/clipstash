@@ -16,6 +16,7 @@ pub struct ClipboardEntry {
     pub timestamp: String,
     pub pinned: bool,
     pub content_type: String,
+    pub image_path: Option<String>,
 }
 
 // ===== Tauri Commands =====
@@ -26,7 +27,7 @@ fn get_clipboard_history(db: tauri::State<'_, Arc<Database>>) -> Result<Vec<Clip
     db.get_all()
 }
 
-/// 添加一条剪贴板记录
+/// 添加文本记录
 #[tauri::command]
 fn add_clipboard_entry(
     db: tauri::State<'_, Arc<Database>>,
@@ -34,7 +35,59 @@ fn add_clipboard_entry(
     content_type: Option<String>,
 ) -> Result<ClipboardEntry, String> {
     let ct = content_type.unwrap_or_else(|| "text".to_string());
-    db.insert(&content, &ct)
+    db.insert_text(&content, &ct)
+}
+
+/// 从剪贴板捕获当前内容（文本或图片）
+#[tauri::command]
+async fn capture_clipboard(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<ClipboardEntry, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    // 尝试读取图片
+    match app.clipboard().read_image() {
+        Ok(image_bytes) => {
+            if !image_bytes.is_empty() {
+                let entry = db.insert_image("📸 截图/图片", &image_bytes)
+                    .map_err(|e| e.to_string())?;
+                return Ok(entry);
+            }
+        }
+        Err(_) => {}
+    }
+
+    // 尝试读取文本
+    match app.clipboard().read_text() {
+        Ok(text) => {
+            if !text.is_empty() {
+                let entry = db.insert_text(&text, "text")
+                    .map_err(|e| e.to_string())?;
+                return Ok(entry);
+            }
+        }
+        Err(_) => {}
+    }
+
+    Err("剪贴板为空".to_string())
+}
+
+/// 保存上传的图片文件
+#[tauri::command]
+async fn save_image_entry(
+    db: tauri::State<'_, Arc<Database>>,
+    file_path: String,
+) -> Result<ClipboardEntry, String> {
+    let image_data = std::fs::read(&file_path)
+        .map_err(|e| format!("Failed to read image: {}", e))?;
+
+    let filename = std::path::Path::new(&file_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "uploaded image".to_string());
+
+    db.insert_image(&format!("🖼️ {}", filename), &image_data)
 }
 
 /// 切换固定状态
@@ -78,7 +131,6 @@ fn get_db_path(app: &tauri::AppHandle) -> String {
         .to_string_lossy()
         .to_string();
 
-    // 确保目录存在
     std::fs::create_dir_all(&app_dir).ok();
 
     format!("{}/clipstash.db", app_dir)
@@ -89,6 +141,7 @@ fn get_db_path(app: &tauri::AppHandle) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcuts(["super+shift+v", "ctrl+shift+v"])
@@ -108,14 +161,12 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            // 初始化 SQLite 数据库
             let db_path = get_db_path(&app.handle());
             eprintln!("📂 Database path: {}", db_path);
 
             let database = Database::new(&db_path)
                 .expect("Failed to initialize database");
 
-            // 用 Arc 包装以便多线程共享
             app.manage(Arc::new(database));
 
             Ok(())
@@ -123,6 +174,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_clipboard_history,
             add_clipboard_entry,
+            capture_clipboard,
+            save_image_entry,
             toggle_pin,
             delete_entry,
             clear_unpinned,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 // ===== 类型定义 =====
 
@@ -10,6 +11,7 @@ interface ClipboardItem {
   timestamp: string;
   pinned: boolean;
   content_type: string;
+  image_path?: string | null;
 }
 
 // ===== 状态 =====
@@ -94,8 +96,8 @@ async function addTestEntry() {
       "docker-compose up -d",
       "ssh user@server.example.com",
       "curl -X POST http://localhost:3000/api/data",
-      "git push origin main --force-with-lease",
       "SELECT COUNT(*) FROM users WHERE active = true;",
+      "git push origin main --force-with-lease",
     ];
     const text = texts[Math.floor(Math.random() * texts.length)];
     const entry: ClipboardItem = await invoke("add_clipboard_entry", {
@@ -106,6 +108,49 @@ async function addTestEntry() {
   } catch (e) {
     console.error("Add entry failed:", e);
   }
+}
+
+/// 从系统剪贴板捕获内容
+async function captureFromClipboard() {
+  try {
+    const entry: ClipboardItem = await invoke("capture_clipboard");
+    items.value.unshift(entry);
+    // 复制提示
+    copiedId.value = entry.id;
+    setTimeout(() => (copiedId.value = null), 1500);
+  } catch (e) {
+    error.value = String(e);
+    setTimeout(() => (error.value = null), 3000);
+  }
+}
+
+/// 通过文件选择器上传图片
+async function uploadImage() {
+  try {
+    const selected = await open({
+      multiple: false,
+      filters: [{
+        name: "Images",
+        extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"],
+      }],
+    });
+
+    if (selected) {
+      const entry: ClipboardItem = await invoke("save_image_entry", {
+        filePath: selected,
+      });
+      items.value.unshift(entry);
+    }
+  } catch (e) {
+    console.error("Upload failed:", e);
+  }
+}
+
+/// 生成图片的 file:// URL
+function getImageUrl(imagePath: string | null | undefined): string {
+  if (!imagePath) return "";
+  // Tauri v2 支持通过 convertFileSrc 转换路径
+  return `asset://localhost/${imagePath}`;
 }
 
 // ===== 生命周期 =====
@@ -120,10 +165,10 @@ onMounted(() => {
     <header class="header">
       <div class="header-top">
         <h1>📋 ClipStash</h1>
-        <span class="version">v0.4</span>
+        <span class="version">v0.5</span>
       </div>
       <div class="shortcut-hint">
-        ⌨️ <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> · 数据已持久化到 SQLite
+        ⌨️ <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> · 支持文本 + 图片
       </div>
     </header>
 
@@ -135,8 +180,18 @@ onMounted(() => {
         class="search-input"
         autofocus
       />
-      <button class="btn btn-secondary" @click="addTestEntry" title="添加测试数据">➕</button>
-      <button class="btn btn-danger" @click="clearAll" title="清除未固定项">🗑️</button>
+      <button class="btn btn-accent" @click="captureFromClipboard" title="从剪贴板捕获">
+        📋
+      </button>
+      <button class="btn btn-secondary" @click="uploadImage" title="上传图片">
+        🖼️
+      </button>
+      <button class="btn btn-secondary" @click="addTestEntry" title="添加测试文本">
+        ➕
+      </button>
+      <button class="btn btn-danger" @click="clearAll" title="清除未固定项">
+        🗑️
+      </button>
     </div>
 
     <div class="stats">
@@ -152,25 +207,39 @@ onMounted(() => {
     </div>
 
     <!-- 错误状态 -->
-    <div v-else-if="error" class="error-state">
-      <p>❌ 加载失败</p>
-      <p class="error-msg">{{ error }}</p>
-      <button class="btn btn-secondary" @click="loadHistory">重试</button>
+    <div v-else-if="error" class="error-toast">
+      ⚠️ {{ error }}
     </div>
 
     <!-- 剪贴板列表 -->
-    <div v-else class="clip-list">
+    <div v-if="!loading" class="clip-list">
       <TransitionGroup name="list">
         <div
           v-for="item in filteredItems"
           :key="item.id"
           class="clip-item"
-          :class="{ pinned: item.pinned, copied: copiedId === item.id }"
+          :class="{
+            pinned: item.pinned,
+            copied: copiedId === item.id,
+            'is-image': item.content_type === 'image'
+          }"
           @click="copyToClipboard(item)"
         >
-          <div class="clip-type">
-            {{ item.content_type === 'text' ? '📝' : item.content_type === 'image' ? '🖼️' : '📎' }}
+          <!-- 图片预览 -->
+          <div v-if="item.content_type === 'image' && item.image_path" class="clip-image-wrap">
+            <img
+              :src="getImageUrl(item.image_path)"
+              class="clip-image"
+              alt="clipboard image"
+              @error="(e) => (e.target as HTMLImageElement).style.display='none'"
+            />
           </div>
+
+          <!-- 内容图标 -->
+          <div v-else class="clip-type">
+            {{ item.content_type === 'image' ? '🖼️' : '📝' }}
+          </div>
+
           <div class="clip-content">
             <div class="clip-text">{{ item.content }}</div>
             <div class="clip-meta">
@@ -179,6 +248,7 @@ onMounted(() => {
               <span v-if="copiedId === item.id" class="copied-badge">✅ 已复制</span>
             </div>
           </div>
+
           <div class="clip-actions" @click.stop>
             <button
               class="btn-icon"
@@ -187,19 +257,23 @@ onMounted(() => {
             >
               {{ item.pinned ? '📌' : '📍' }}
             </button>
-            <button class="btn-icon" @click="deleteItem(item)" title="删除">❌</button>
+            <button class="btn-icon" @click="deleteItem(item)" title="删除">
+              ❌
+            </button>
           </div>
         </div>
       </TransitionGroup>
 
       <div v-if="filteredItems.length === 0 && !loading" class="empty-state">
         <p>📭 {{ searchQuery ? '没有匹配的内容' : '剪贴板是空的' }}</p>
-        <p class="empty-sub" v-if="!searchQuery">复制点东西试试？或点击 ➕ 添加测试数据</p>
+        <p class="empty-sub" v-if="!searchQuery">
+          点 📋 捕获剪贴板 · 点 🖼️ 上传图片 · 点 ➕ 添加测试
+        </p>
       </div>
     </div>
 
     <footer class="footer">
-      <span>Tauri + Vue 3 + Rust + SQLite 🚀</span>
+      <span>Tauri + Vue 3 + Rust + SQLite · Phase 5 图片支持 🖼️</span>
     </footer>
   </div>
 </template>
@@ -215,10 +289,7 @@ onMounted(() => {
   overflow: hidden;
 }
 
-.header {
-  text-align: center;
-  padding: 8px 0 12px;
-}
+.header { text-align: center; padding: 8px 0 12px; }
 
 .header-top {
   display: flex;
@@ -254,7 +325,7 @@ kbd {
 
 .toolbar {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 8px;
 }
 
@@ -281,6 +352,7 @@ kbd {
   transition: opacity 0.2s;
 }
 
+.btn-accent { background: var(--accent); color: white; }
 .btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); }
 .btn-danger { background: var(--danger); color: white; }
 .btn:hover { opacity: 0.8; }
@@ -292,7 +364,6 @@ kbd {
   color: var(--text-secondary);
   font-size: 0.8rem;
   margin-bottom: 8px;
-  padding: 0 2px;
 }
 
 .db-badge {
@@ -303,7 +374,7 @@ kbd {
   font-size: 0.7rem;
 }
 
-.loading, .error-state {
+.loading {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -324,12 +395,19 @@ kbd {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.error-msg {
-  font-size: 0.8rem;
+.error-toast {
+  background: rgba(247, 118, 142, 0.15);
+  border: 1px solid var(--danger);
   color: var(--danger);
-  max-width: 400px;
-  word-break: break-all;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+  text-align: center;
+  animation: fadeIn 0.3s ease;
 }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } }
 
 .clip-list {
   flex: 1;
@@ -356,6 +434,21 @@ kbd {
 .clip-item.copied {
   border-color: var(--success);
   background: rgba(158, 206, 106, 0.1);
+}
+
+.clip-image-wrap {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--bg-tertiary);
+}
+
+.clip-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .clip-type {
