@@ -70,7 +70,13 @@ npm run tauri build
 - [x] Vue 3 基础 UI
 - [x] 理解 Tauri 项目结构
 
-### Phase 2: 前后端通信
+### Phase 2: 全局快捷键 ✅
+- [x] `Ctrl+Shift+V` / `Cmd+Shift+V` 唤出/隐藏窗口
+- [x] 窗口启动时隐藏到后台
+- [x] 系统托盘常驻
+- [x] 点击内容自动复制 + 动画反馈
+
+### Phase 3: 前后端通信
 - [ ] 理解 `#[tauri::command]` 和 `invoke`
 - [ ] 从 Rust 后端读取数据
 - [ ] 前端调用 Rust 函数
