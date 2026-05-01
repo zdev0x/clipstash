@@ -3,7 +3,7 @@ mod db;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::Manager;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 pub use db::Database;
 
@@ -38,7 +38,7 @@ fn add_clipboard_entry(
     db.insert_text(&content, &ct)
 }
 
-/// 从剪贴板捕获当前内容（文本或图片）
+/// 从系统剪贴板捕获当前内容
 #[tauri::command]
 async fn capture_clipboard(
     app: tauri::AppHandle,
@@ -46,19 +46,7 @@ async fn capture_clipboard(
 ) -> Result<ClipboardEntry, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
-    // 尝试读取图片
-    match app.clipboard().read_image() {
-        Ok(image_bytes) => {
-            if !image_bytes.is_empty() {
-                let entry = db.insert_image("📸 截图/图片", &image_bytes)
-                    .map_err(|e| e.to_string())?;
-                return Ok(entry);
-            }
-        }
-        Err(_) => {}
-    }
-
-    // 尝试读取文本
+    // 读取剪贴板文本
     match app.clipboard().read_text() {
         Ok(text) => {
             if !text.is_empty() {
@@ -70,7 +58,7 @@ async fn capture_clipboard(
         Err(_) => {}
     }
 
-    Err("剪贴板为空".to_string())
+    Err("剪贴板为空，请先复制一些文本内容".to_string())
 }
 
 /// 保存上传的图片文件
