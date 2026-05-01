@@ -116,7 +116,7 @@ impl Database {
             )
             .map_err(|e| format!("Prepare failed: {}", e))?;
 
-        let entries = stmt
+        let entries: Vec<ClipboardEntry> = stmt
             .query_map([], |row| {
                 Ok(ClipboardEntry {
                     id: row.get(0)?,

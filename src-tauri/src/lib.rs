@@ -134,7 +134,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcuts(["super+shift+v", "ctrl+shift+v"])
                 .unwrap()
-                .with_handler(move |app, shortcut, event| {
+                .with_handler(move |app, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
                         if let Some(window) = app.get_webview_window("main") {
                             if window.is_visible().unwrap_or(false) {
