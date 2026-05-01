@@ -1,7 +1,11 @@
+mod db;
+
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
-use tauri::{Manager, State};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, ShortcutState};
+use std::sync::Arc;
+use tauri::Manager;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+pub use db::Database;
 
 // ===== 数据结构 =====
 
@@ -14,119 +18,41 @@ pub struct ClipboardEntry {
     pub content_type: String,
 }
 
-// ===== 应用状态 =====
-
-pub struct AppState {
-    pub clipboard_history: Mutex<Vec<ClipboardEntry>>,
-    pub next_id: Mutex<u32>,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            clipboard_history: Mutex::new(Vec::new()),
-            next_id: Mutex::new(1),
-        }
-    }
-}
-
-/// 初始化示例数据（后续会被真实剪贴板数据替代）
-fn init_sample_data(state: &AppState) {
-    let samples = vec![
-        ("npm install @tauri-apps/api @tauri-apps/plugin-global-shortcut", "text", true),
-        ("git commit -m \"feat: add global shortcut\"", "text", false),
-        ("https://github.com/zdev0x/clipstash", "text", false),
-        ("SELECT * FROM clipboard_entries ORDER BY created_at DESC;", "text", false),
-        ("border-radius: 12px; backdrop-filter: blur(10px);", "text", false),
-        ("const result = await invoke('get_clipboard_history');", "text", false),
-    ];
-
-    let mut history = state.clipboard_history.lock().unwrap();
-    let mut id_guard = state.next_id.lock().unwrap();
-
-    for (content, content_type, pinned) in samples {
-        let entry = ClipboardEntry {
-            id: *id_guard,
-            content: content.to_string(),
-            timestamp: chrono::Local::now()
-                .format("%H:%M:%S")
-                .to_string(),
-            pinned,
-            content_type: content_type.to_string(),
-        };
-        history.push(entry);
-        *id_guard += 1;
-    }
-}
-
 // ===== Tauri Commands =====
 
 /// 获取剪贴板历史记录
 #[tauri::command]
-fn get_clipboard_history(state: State<AppState>) -> Vec<ClipboardEntry> {
-    let history = state.clipboard_history.lock().unwrap();
-    history.clone()
+fn get_clipboard_history(db: tauri::State<'_, Arc<Database>>) -> Result<Vec<ClipboardEntry>, String> {
+    db.get_all()
 }
 
 /// 添加一条剪贴板记录
 #[tauri::command]
 fn add_clipboard_entry(
-    state: State<AppState>,
+    db: tauri::State<'_, Arc<Database>>,
     content: String,
     content_type: Option<String>,
-) -> ClipboardEntry {
-    let mut id_guard = state.next_id.lock().unwrap();
-    let id = *id_guard;
-    *id_guard += 1;
-
-    let entry = ClipboardEntry {
-        id,
-        content,
-        timestamp: chrono::Local::now()
-            .format("%H:%M:%S")
-            .to_string(),
-        pinned: false,
-        content_type: content_type.unwrap_or_else(|| "text".to_string()),
-    };
-
-    let mut history = state.clipboard_history.lock().unwrap();
-    history.insert(0, entry.clone());
-
-    if history.len() > 100 {
-        history.truncate(100);
-    }
-
-    entry
+) -> Result<ClipboardEntry, String> {
+    let ct = content_type.unwrap_or_else(|| "text".to_string());
+    db.insert(&content, &ct)
 }
 
 /// 切换固定状态
 #[tauri::command]
-fn toggle_pin(state: State<AppState>, id: u32) -> bool {
-    let mut history = state.clipboard_history.lock().unwrap();
-    if let Some(entry) = history.iter_mut().find(|e| e.id == id) {
-        entry.pinned = !entry.pinned;
-        entry.pinned
-    } else {
-        false
-    }
+fn toggle_pin(db: tauri::State<'_, Arc<Database>>, id: u32) -> Result<bool, String> {
+    db.toggle_pin(id)
 }
 
 /// 删除一条记录
 #[tauri::command]
-fn delete_entry(state: State<AppState>, id: u32) -> bool {
-    let mut history = state.clipboard_history.lock().unwrap();
-    let len_before = history.len();
-    history.retain(|e| e.id != id);
-    history.len() < len_before
+fn delete_entry(db: tauri::State<'_, Arc<Database>>, id: u32) -> Result<bool, String> {
+    db.delete(id)
 }
 
 /// 清除所有未固定的记录
 #[tauri::command]
-fn clear_unpinned(state: State<AppState>) -> usize {
-    let mut history = state.clipboard_history.lock().unwrap();
-    let len_before = history.len();
-    history.retain(|e| e.pinned);
-    len_before - history.len()
+fn clear_unpinned(db: tauri::State<'_, Arc<Database>>) -> Result<usize, String> {
+    db.clear_unpinned()
 }
 
 /// 切换窗口显隐
@@ -142,12 +68,25 @@ fn toggle_window(app: tauri::AppHandle) {
     }
 }
 
+// ===== 数据库路径 =====
+
+fn get_db_path(app: &tauri::AppHandle) -> String {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .expect("Failed to get app data dir")
+        .to_string_lossy()
+        .to_string();
+
+    // 确保目录存在
+    std::fs::create_dir_all(&app_dir).ok();
+
+    format!("{}/clipstash.db", app_dir)
+}
+
 // ===== 插件初始化 =====
 
 pub fn run() {
-    let app_state = AppState::default();
-    init_sample_data(&app_state);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
@@ -168,7 +107,19 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(app_state)
+        .setup(|app| {
+            // 初始化 SQLite 数据库
+            let db_path = get_db_path(&app.handle());
+            eprintln!("📂 Database path: {}", db_path);
+
+            let database = Database::new(&db_path)
+                .expect("Failed to initialize database");
+
+            // 用 Arc 包装以便多线程共享
+            app.manage(Arc::new(database));
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_clipboard_history,
             add_clipboard_entry,

@@ -18,6 +18,7 @@ const items = ref<ClipboardItem[]>([]);
 const searchQuery = ref("");
 const copiedId = ref<number | null>(null);
 const loading = ref(true);
+const error = ref<string | null>(null);
 
 // ===== 计算属性 =====
 
@@ -34,13 +35,15 @@ const filteredItems = computed(() => {
 const pinnedCount = computed(() => items.value.filter((i) => i.pinned).length);
 const totalCount = computed(() => items.value.length);
 
-// ===== Tauri Commands 调用 =====
+// ===== Tauri Commands =====
 
 async function loadHistory() {
   try {
     loading.value = true;
+    error.value = null;
     items.value = await invoke("get_clipboard_history");
   } catch (e) {
+    error.value = String(e);
     console.error("Failed to load history:", e);
   } finally {
     loading.value = false;
@@ -59,8 +62,8 @@ async function copyToClipboard(item: ClipboardItem) {
 
 async function togglePin(item: ClipboardItem) {
   try {
-    await invoke("toggle_pin", { id: item.id });
-    item.pinned = !item.pinned;
+    const newPinned: boolean = await invoke("toggle_pin", { id: item.id });
+    item.pinned = newPinned;
   } catch (e) {
     console.error("Toggle pin failed:", e);
   }
@@ -86,8 +89,17 @@ async function clearAll() {
 
 async function addTestEntry() {
   try {
+    const texts = [
+      "console.log('Hello from Tauri!');",
+      "docker-compose up -d",
+      "ssh user@server.example.com",
+      "curl -X POST http://localhost:3000/api/data",
+      "git push origin main --force-with-lease",
+      "SELECT COUNT(*) FROM users WHERE active = true;",
+    ];
+    const text = texts[Math.floor(Math.random() * texts.length)];
     const entry: ClipboardItem = await invoke("add_clipboard_entry", {
-      content: `测试内容 ${Date.now()}`,
+      content: text,
       contentType: "text",
     });
     items.value.unshift(entry);
@@ -108,10 +120,10 @@ onMounted(() => {
     <header class="header">
       <div class="header-top">
         <h1>📋 ClipStash</h1>
-        <span class="version">v0.3</span>
+        <span class="version">v0.4</span>
       </div>
       <div class="shortcut-hint">
-        ⌨️ <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> 唤出/隐藏
+        ⌨️ <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> · 数据已持久化到 SQLite
       </div>
     </header>
 
@@ -123,23 +135,27 @@ onMounted(() => {
         class="search-input"
         autofocus
       />
-      <button class="btn btn-secondary" @click="addTestEntry" title="添加测试数据">
-        ➕
-      </button>
-      <button class="btn btn-danger" @click="clearAll" title="清除未固定项">
-        🗑️
-      </button>
+      <button class="btn btn-secondary" @click="addTestEntry" title="添加测试数据">➕</button>
+      <button class="btn btn-danger" @click="clearAll" title="清除未固定项">🗑️</button>
     </div>
 
     <div class="stats">
       <span>{{ totalCount }} 条</span>
       <span v-if="pinnedCount > 0">· {{ pinnedCount }} 固定</span>
+      <span class="db-badge">💾 SQLite</span>
     </div>
 
     <!-- 加载状态 -->
     <div v-if="loading" class="loading">
       <div class="spinner"></div>
       <p>加载中...</p>
+    </div>
+
+    <!-- 错误状态 -->
+    <div v-else-if="error" class="error-state">
+      <p>❌ 加载失败</p>
+      <p class="error-msg">{{ error }}</p>
+      <button class="btn btn-secondary" @click="loadHistory">重试</button>
     </div>
 
     <!-- 剪贴板列表 -->
@@ -152,7 +168,7 @@ onMounted(() => {
           :class="{ pinned: item.pinned, copied: copiedId === item.id }"
           @click="copyToClipboard(item)"
         >
-          <div class="clip-type" :class="item.content_type">
+          <div class="clip-type">
             {{ item.content_type === 'text' ? '📝' : item.content_type === 'image' ? '🖼️' : '📎' }}
           </div>
           <div class="clip-content">
@@ -171,9 +187,7 @@ onMounted(() => {
             >
               {{ item.pinned ? '📌' : '📍' }}
             </button>
-            <button class="btn-icon" @click="deleteItem(item)" title="删除">
-              ❌
-            </button>
+            <button class="btn-icon" @click="deleteItem(item)" title="删除">❌</button>
           </div>
         </div>
       </TransitionGroup>
@@ -185,7 +199,7 @@ onMounted(() => {
     </div>
 
     <footer class="footer">
-      <span>Tauri + Vue 3 + Rust · 前后端通信已打通 🚀</span>
+      <span>Tauri + Vue 3 + Rust + SQLite 🚀</span>
     </footer>
   </div>
 </template>
@@ -213,10 +227,7 @@ onMounted(() => {
   gap: 8px;
 }
 
-.header h1 {
-  font-size: 1.5rem;
-  color: var(--accent);
-}
+.header h1 { font-size: 1.5rem; color: var(--accent); }
 
 .version {
   font-size: 0.75rem;
@@ -259,9 +270,7 @@ kbd {
   transition: border-color 0.2s;
 }
 
-.search-input:focus {
-  border-color: var(--accent);
-}
+.search-input:focus { border-color: var(--accent); }
 
 .btn {
   padding: 6px 10px;
@@ -272,30 +281,29 @@ kbd {
   transition: opacity 0.2s;
 }
 
-.btn-secondary {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.btn-danger {
-  background: var(--danger);
-  color: white;
-}
-
-.btn:hover {
-  opacity: 0.8;
-}
+.btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); }
+.btn-danger { background: var(--danger); color: white; }
+.btn:hover { opacity: 0.8; }
 
 .stats {
   display: flex;
   gap: 8px;
+  align-items: center;
   color: var(--text-secondary);
   font-size: 0.8rem;
   margin-bottom: 8px;
   padding: 0 2px;
 }
 
-.loading {
+.db-badge {
+  margin-left: auto;
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+}
+
+.loading, .error-state {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -314,8 +322,13 @@ kbd {
   animation: spin 0.8s linear infinite;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error-msg {
+  font-size: 0.8rem;
+  color: var(--danger);
+  max-width: 400px;
+  word-break: break-all;
 }
 
 .clip-list {
@@ -338,14 +351,8 @@ kbd {
   gap: 10px;
 }
 
-.clip-item:hover {
-  border-color: var(--accent);
-}
-
-.clip-item.pinned {
-  border-left: 3px solid var(--warning);
-}
-
+.clip-item:hover { border-color: var(--accent); }
+.clip-item.pinned { border-left: 3px solid var(--warning); }
 .clip-item.copied {
   border-color: var(--success);
   background: rgba(158, 206, 106, 0.1);
@@ -358,10 +365,7 @@ kbd {
   text-align: center;
 }
 
-.clip-content {
-  flex: 1;
-  min-width: 0;
-}
+.clip-content { flex: 1; min-width: 0; }
 
 .clip-text {
   font-family: "SF Mono", "Fira Code", monospace;
@@ -389,9 +393,7 @@ kbd {
   transition: opacity 0.2s;
 }
 
-.clip-item:hover .clip-actions {
-  opacity: 1;
-}
+.clip-item:hover .clip-actions { opacity: 1; }
 
 .btn-icon {
   background: none;
@@ -402,9 +404,7 @@ kbd {
   border-radius: 4px;
 }
 
-.btn-icon:hover {
-  background: var(--bg-tertiary);
-}
+.btn-icon:hover { background: var(--bg-tertiary); }
 
 .empty-state {
   text-align: center;
@@ -412,10 +412,7 @@ kbd {
   color: var(--text-secondary);
 }
 
-.empty-sub {
-  font-size: 0.85rem;
-  margin-top: 4px;
-}
+.empty-sub { font-size: 0.85rem; margin-top: 4px; }
 
 .footer {
   text-align: center;
@@ -426,18 +423,7 @@ kbd {
   margin-top: 8px;
 }
 
-.list-enter-active,
-.list-leave-active {
-  transition: all 0.3s ease;
-}
-
-.list-enter-from {
-  opacity: 0;
-  transform: translateX(-20px);
-}
-
-.list-leave-to {
-  opacity: 0;
-  transform: translateX(20px);
-}
+.list-enter-active, .list-leave-active { transition: all 0.3s ease; }
+.list-enter-from { opacity: 0; transform: translateX(-20px); }
+.list-leave-to { opacity: 0; transform: translateX(20px); }
 </style>
