@@ -35,14 +35,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Extract version from tag
-        id: version
+        shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
           echo "VERSION=$TAG" >> $GITHUB_OUTPUT
           echo "📌 Building version: $TAG"
 
       - name: Update version in tauri.conf.json
+        shell: bash
         run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
           python3 -c "
           import json, sys
           version = sys.argv[1]
@@ -52,10 +54,12 @@ jobs:
           with open('src-tauri/tauri.conf.json', 'w') as f:
               json.dump(config, f, indent=2)
           print(f'✅ Version set to {version}')
-          " "${{ steps.version.outputs.VERSION }}"
+          " "$VERSION"
 
       - name: Update version in package.json
+        shell: bash
         run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
           python3 -c "
           import json, sys
           version = sys.argv[1]
@@ -65,7 +69,7 @@ jobs:
           with open('package.json', 'w') as f:
               json.dump(config, f, indent=2)
           print(f'✅ package.json version set to {version}')
-          " "${{ steps.version.outputs.VERSION }}"
+          " "$VERSION"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
