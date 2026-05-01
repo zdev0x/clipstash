@@ -30,6 +30,35 @@ impl Default for AppState {
     }
 }
 
+/// 初始化示例数据（后续会被真实剪贴板数据替代）
+fn init_sample_data(state: &AppState) {
+    let samples = vec![
+        ("npm install @tauri-apps/api @tauri-apps/plugin-global-shortcut", "text", true),
+        ("git commit -m \"feat: add global shortcut\"", "text", false),
+        ("https://github.com/zdev0x/clipstash", "text", false),
+        ("SELECT * FROM clipboard_entries ORDER BY created_at DESC;", "text", false),
+        ("border-radius: 12px; backdrop-filter: blur(10px);", "text", false),
+        ("const result = await invoke('get_clipboard_history');", "text", false),
+    ];
+
+    let mut history = state.clipboard_history.lock().unwrap();
+    let mut id_guard = state.next_id.lock().unwrap();
+
+    for (content, content_type, pinned) in samples {
+        let entry = ClipboardEntry {
+            id: *id_guard,
+            content: content.to_string(),
+            timestamp: chrono::Local::now()
+                .format("%H:%M:%S")
+                .to_string(),
+            pinned,
+            content_type: content_type.to_string(),
+        };
+        history.push(entry);
+        *id_guard += 1;
+    }
+}
+
 // ===== Tauri Commands =====
 
 /// 获取剪贴板历史记录
@@ -100,7 +129,7 @@ fn clear_unpinned(state: State<AppState>) -> usize {
     len_before - history.len()
 }
 
-/// 切换窗口显隐（给前端调用）
+/// 切换窗口显隐
 #[tauri::command]
 fn toggle_window(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -116,11 +145,13 @@ fn toggle_window(app: tauri::AppHandle) {
 // ===== 插件初始化 =====
 
 pub fn run() {
+    let app_state = AppState::default();
+    init_sample_data(&app_state);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                // 注册快捷键: Cmd+Shift+V (macOS) / Ctrl+Shift+V (Windows)
                 .with_shortcuts(["super+shift+v", "ctrl+shift+v"])
                 .unwrap()
                 .with_handler(move |app, shortcut, event| {
@@ -137,7 +168,7 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(AppState::default())
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_clipboard_history,
             add_clipboard_entry,

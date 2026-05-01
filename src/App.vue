@@ -1,60 +1,106 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+
+// ===== 类型定义 =====
 
 interface ClipboardItem {
   id: number;
-  text: string;
+  content: string;
   timestamp: string;
   pinned: boolean;
+  content_type: string;
 }
+
+// ===== 状态 =====
 
 const items = ref<ClipboardItem[]>([]);
 const searchQuery = ref("");
 const copiedId = ref<number | null>(null);
+const loading = ref(true);
 
-const mockData: ClipboardItem[] = [
-  { id: 1, text: "npm install @tauri-apps/api", timestamp: "10:32", pinned: true },
-  { id: 2, text: 'git commit -m "feat: add clipboard history"', timestamp: "10:28", pinned: false },
-  { id: 3, text: "https://github.com/zdev0x/clipstash", timestamp: "10:15", pinned: false },
-  { id: 4, text: 'console.log("Hello, Tauri!")', timestamp: "09:55", pinned: false },
-  { id: 5, text: "SELECT * FROM users WHERE active = true;", timestamp: "09:30", pinned: false },
-  { id: 6, text: "border-radius: 12px; background: #1a1b26;", timestamp: "09:15", pinned: false },
-];
-
-onMounted(() => {
-  items.value = mockData;
-});
+// ===== 计算属性 =====
 
 const filteredItems = computed(() => {
   if (!searchQuery.value) return items.value;
   const q = searchQuery.value.toLowerCase();
-  return items.value.filter((item) => item.text.toLowerCase().includes(q));
+  return items.value.filter(
+    (item) =>
+      item.content.toLowerCase().includes(q) ||
+      item.content_type.toLowerCase().includes(q)
+  );
 });
 
 const pinnedCount = computed(() => items.value.filter((i) => i.pinned).length);
+const totalCount = computed(() => items.value.length);
 
-function copyToClipboard(item: ClipboardItem) {
-  navigator.clipboard.writeText(item.text);
-  copiedId.value = item.id;
-  setTimeout(() => (copiedId.value = null), 1500);
+// ===== Tauri Commands 调用 =====
+
+async function loadHistory() {
+  try {
+    loading.value = true;
+    items.value = await invoke("get_clipboard_history");
+  } catch (e) {
+    console.error("Failed to load history:", e);
+  } finally {
+    loading.value = false;
+  }
 }
 
-function togglePin(item: ClipboardItem) {
-  item.pinned = !item.pinned;
+async function copyToClipboard(item: ClipboardItem) {
+  try {
+    await navigator.clipboard.writeText(item.content);
+    copiedId.value = item.id;
+    setTimeout(() => (copiedId.value = null), 1500);
+  } catch (e) {
+    console.error("Copy failed:", e);
+  }
 }
 
-function deleteItem(id: number) {
-  items.value = items.value.filter((item) => item.id !== id);
+async function togglePin(item: ClipboardItem) {
+  try {
+    await invoke("toggle_pin", { id: item.id });
+    item.pinned = !item.pinned;
+  } catch (e) {
+    console.error("Toggle pin failed:", e);
+  }
 }
 
-function clearAll() {
-  items.value = items.value.filter((item) => item.pinned);
+async function deleteItem(item: ClipboardItem) {
+  try {
+    await invoke("delete_entry", { id: item.id });
+    items.value = items.value.filter((i) => i.id !== item.id);
+  } catch (e) {
+    console.error("Delete failed:", e);
+  }
 }
 
-// TODO: 后续接 Rust invoke
-// async function loadHistory() {
-//   items.value = await invoke("get_clipboard_history");
-// }
+async function clearAll() {
+  try {
+    await invoke("clear_unpinned");
+    items.value = items.value.filter((item) => item.pinned);
+  } catch (e) {
+    console.error("Clear failed:", e);
+  }
+}
+
+async function addTestEntry() {
+  try {
+    const entry: ClipboardItem = await invoke("add_clipboard_entry", {
+      content: `测试内容 ${Date.now()}`,
+      contentType: "text",
+    });
+    items.value.unshift(entry);
+  } catch (e) {
+    console.error("Add entry failed:", e);
+  }
+}
+
+// ===== 生命周期 =====
+
+onMounted(() => {
+  loadHistory();
+});
 </script>
 
 <template>
@@ -62,10 +108,10 @@ function clearAll() {
     <header class="header">
       <div class="header-top">
         <h1>📋 ClipStash</h1>
-        <span class="version">v0.2</span>
+        <span class="version">v0.3</span>
       </div>
       <div class="shortcut-hint">
-        ⌨️ <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd> 唤出/隐藏
+        ⌨️ <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> 唤出/隐藏
       </div>
     </header>
 
@@ -77,15 +123,27 @@ function clearAll() {
         class="search-input"
         autofocus
       />
-      <button class="btn btn-secondary" @click="clearAll" title="清除未固定项">🗑️</button>
+      <button class="btn btn-secondary" @click="addTestEntry" title="添加测试数据">
+        ➕
+      </button>
+      <button class="btn btn-danger" @click="clearAll" title="清除未固定项">
+        🗑️
+      </button>
     </div>
 
     <div class="stats">
-      <span>{{ items.length }} 条</span>
-      <span v-if="pinnedCount > 0">{{ pinnedCount }} 条固定</span>
+      <span>{{ totalCount }} 条</span>
+      <span v-if="pinnedCount > 0">· {{ pinnedCount }} 固定</span>
     </div>
 
-    <div class="clip-list">
+    <!-- 加载状态 -->
+    <div v-if="loading" class="loading">
+      <div class="spinner"></div>
+      <p>加载中...</p>
+    </div>
+
+    <!-- 剪贴板列表 -->
+    <div v-else class="clip-list">
       <TransitionGroup name="list">
         <div
           v-for="item in filteredItems"
@@ -94,8 +152,11 @@ function clearAll() {
           :class="{ pinned: item.pinned, copied: copiedId === item.id }"
           @click="copyToClipboard(item)"
         >
+          <div class="clip-type" :class="item.content_type">
+            {{ item.content_type === 'text' ? '📝' : item.content_type === 'image' ? '🖼️' : '📎' }}
+          </div>
           <div class="clip-content">
-            <div class="clip-text">{{ item.text }}</div>
+            <div class="clip-text">{{ item.content }}</div>
             <div class="clip-meta">
               <span class="time">🕐 {{ item.timestamp }}</span>
               <span v-if="item.pinned" class="pin-badge">📌</span>
@@ -103,22 +164,28 @@ function clearAll() {
             </div>
           </div>
           <div class="clip-actions" @click.stop>
-            <button class="btn-icon" @click="togglePin(item)" :title="item.pinned ? '取消固定' : '固定'">
+            <button
+              class="btn-icon"
+              @click="togglePin(item)"
+              :title="item.pinned ? '取消固定' : '固定'"
+            >
               {{ item.pinned ? '📌' : '📍' }}
             </button>
-            <button class="btn-icon" @click="deleteItem(item.id)" title="删除">❌</button>
+            <button class="btn-icon" @click="deleteItem(item)" title="删除">
+              ❌
+            </button>
           </div>
         </div>
       </TransitionGroup>
 
-      <div v-if="filteredItems.length === 0" class="empty-state">
-        <p>📭 没有匹配的内容</p>
-        <p class="empty-sub">复制点东西试试？</p>
+      <div v-if="filteredItems.length === 0 && !loading" class="empty-state">
+        <p>📭 {{ searchQuery ? '没有匹配的内容' : '剪贴板是空的' }}</p>
+        <p class="empty-sub" v-if="!searchQuery">复制点东西试试？或点击 ➕ 添加测试数据</p>
       </div>
     </div>
 
     <footer class="footer">
-      <span>Tauri + Vue 3 学习项目</span>
+      <span>Tauri + Vue 3 + Rust · 前后端通信已打通 🚀</span>
     </footer>
   </div>
 </template>
@@ -197,7 +264,7 @@ kbd {
 }
 
 .btn {
-  padding: 6px 12px;
+  padding: 6px 10px;
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -210,17 +277,45 @@ kbd {
   color: var(--text-primary);
 }
 
+.btn-danger {
+  background: var(--danger);
+  color: white;
+}
+
 .btn:hover {
   opacity: 0.8;
 }
 
 .stats {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   color: var(--text-secondary);
   font-size: 0.8rem;
   margin-bottom: 8px;
   padding: 0 2px;
+}
+
+.loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-secondary);
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .clip-list {
@@ -240,6 +335,7 @@ kbd {
   border-radius: 8px;
   transition: all 0.2s;
   cursor: pointer;
+  gap: 10px;
 }
 
 .clip-item:hover {
@@ -253,6 +349,13 @@ kbd {
 .clip-item.copied {
   border-color: var(--success);
   background: rgba(158, 206, 106, 0.1);
+}
+
+.clip-type {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+  width: 28px;
+  text-align: center;
 }
 
 .clip-content {
@@ -276,14 +379,8 @@ kbd {
   color: var(--text-secondary);
 }
 
-.pin-badge {
-  color: var(--warning);
-}
-
-.copied-badge {
-  color: var(--success);
-  font-weight: 500;
-}
+.pin-badge { color: var(--warning); }
+.copied-badge { color: var(--success); font-weight: 500; }
 
 .clip-actions {
   display: flex;
@@ -329,7 +426,6 @@ kbd {
   margin-top: 8px;
 }
 
-/* 列表动画 */
 .list-enter-active,
 .list-leave-active {
   transition: all 0.3s ease;
